@@ -1,1 +1,337 @@
+'use strict';
 
+/**
+ * Student Records Data Processor
+ * Pure Node.js / vanilla JavaScript — no external libraries.
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Data loading
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads and parses the students.json file from disk.
+ * @param {string} filePath - Path to the JSON file.
+ * @returns {Array<Object>} Parsed array of student records.
+ */
+function loadStudents(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    throw new Error(`Could not read file "${filePath}": ${err.message}`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Could not parse "${filePath}" as JSON: ${err.message}`);
+  }
+
+  if (!Array.isArray(data)) {
+    throw new Error(`Expected "${filePath}" to contain a JSON array of students.`);
+  }
+
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Core analysis functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a student's average grade. A student with no grades scores 0.
+ * @param {Object} student
+ * @returns {number}
+ */
+function getAverageGrade(student) {
+  if (!student || typeof student !== 'object') {
+    throw new Error('getAverageGrade: "student" must be an object.');
+  }
+  const grades = Array.isArray(student.grades) ? student.grades : [];
+
+  if (grades.length === 0) return 0;
+
+  const total = grades.reduce((sum, grade) => sum + grade, 0);
+  return total / grades.length;
+}
+
+/**
+ * Returns the top n students sorted by average grade, descending.
+ * Does not mutate the original array.
+ * @param {Array<Object>} students
+ * @param {number} n
+ * @returns {Array<Object>}
+ */
+function getTopStudents(students, n) {
+  if (!Array.isArray(students)) {
+    throw new Error('getTopStudents: "students" must be an array.');
+  }
+  if (typeof n !== 'number' || !Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error('getTopStudents: "n" must be a non-negative integer.');
+  }
+
+  const sorted = students
+    .map((student) => ({ student, avg: getAverageGrade(student) }))
+    .sort((a, b) => b.avg - a.avg)
+    .map((entry) => entry.student);
+
+  return sorted.slice(0, n);
+}
+
+/**
+ * Groups students by their course field.
+ * @param {Array<Object>} students
+ * @returns {Object<string, Array<Object>>}
+ */
+function groupByCourse(students) {
+  if (!Array.isArray(students)) {
+    throw new Error('groupByCourse: "students" must be an array.');
+  }
+
+  return students.reduce((groups, student) => {
+    const course = student.course || 'Unassigned';
+    if (!groups[course]) {
+      groups[course] = [];
+    }
+    groups[course] = [...groups[course], student];
+    return groups;
+  }, {});
+}
+
+/**
+ * Returns a count of enrolled vs. not-enrolled students.
+ * @param {Array<Object>} students
+ * @returns {{ enrolled: number, notEnrolled: number }}
+ */
+function getEnrolledCount(students) {
+  if (!Array.isArray(students)) {
+    throw new Error('getEnrolledCount: "students" must be an array.');
+  }
+
+  const enrolled = students.filter((student) => student.enrolled === true).length;
+  const notEnrolled = students.filter((student) => student.enrolled !== true).length;
+
+  return { enrolled, notEnrolled };
+}
+
+/**
+ * Case-insensitive search for a student by name.
+ * @param {Array<Object>} students
+ * @param {string} name
+ * @returns {Object|null}
+ */
+function findStudent(students, name) {
+  if (!Array.isArray(students)) {
+    throw new Error('findStudent: "students" must be an array.');
+  }
+  if (typeof name !== 'string' || name.trim() === '') {
+    throw new Error('findStudent: "name" must be a non-empty string.');
+  }
+
+  const target = name.trim().toLowerCase();
+  const match = students.filter(
+    (student) => typeof student.name === 'string' && student.name.toLowerCase() === target
+  );
+
+  return match.length > 0 ? match[0] : null;
+}
+
+/**
+ * Returns the average grade per course, sorted highest to lowest.
+ * @param {Array<Object>} students
+ * @returns {Array<{ course: string, average: number }>}
+ */
+function getCourseAverages(students) {
+  if (!Array.isArray(students)) {
+    throw new Error('getCourseAverages: "students" must be an array.');
+  }
+
+  const grouped = groupByCourse(students);
+
+  const averages = Object.keys(grouped).map((course) => {
+    const roster = grouped[course];
+    const total = roster.reduce((sum, student) => sum + getAverageGrade(student), 0);
+    return { course, average: roster.length > 0 ? total / roster.length : 0 };
+  });
+
+  return averages.sort((a, b) => b.average - a.average);
+}
+
+/**
+ * Builds a single summary object for the whole dataset.
+ * @param {Array<Object>} students
+ * @returns {Object}
+ */
+function exportSummary(students) {
+  if (!Array.isArray(students)) {
+    throw new Error('exportSummary: "students" must be an array.');
+  }
+
+  const totalStudents = students.length;
+
+  const overallAverage =
+    totalStudents === 0
+      ? 0
+      : students.reduce((sum, student) => sum + getAverageGrade(student), 0) / totalStudents;
+
+  const [topStudent] = getTopStudents(students, 1);
+
+  return {
+    totalStudents,
+    overallAverage: Number(overallAverage.toFixed(2)),
+    topStudent: topStudent
+      ? { name: topStudent.name, course: topStudent.course, average: Number(getAverageGrade(topStudent).toFixed(2)) }
+      : null,
+    courseBreakdown: getCourseAverages(students).map((entry) => ({
+      course: entry.course,
+      average: Number(entry.average.toFixed(2)),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Report printing
+// ---------------------------------------------------------------------------
+
+function printSectionHeader(title) {
+  console.log('\n' + '='.repeat(60));
+  console.log(title);
+  console.log('='.repeat(60));
+}
+
+function formatGrade(value) {
+  return value.toFixed(2);
+}
+
+function main() {
+  const dataPath = path.join(__dirname, 'students.json');
+  const students = loadStudents(dataPath);
+
+  console.log('STUDENT RECORDS DATA PROCESSOR');
+  console.log(`Loaded ${students.length} student record(s) from ${dataPath}`);
+
+  // --- Total count & overall average -------------------------------------
+  printSectionHeader('OVERALL SUMMARY');
+  const summary = exportSummary(students);
+  console.log(`Total students     : ${summary.totalStudents}`);
+  console.log(`Overall average    : ${formatGrade(summary.overallAverage)}`);
+  console.log(
+    `Top-performing     : ${
+      summary.topStudent
+        ? `${summary.topStudent.name} (${summary.topStudent.course}) — avg ${formatGrade(summary.topStudent.average)}`
+        : 'N/A (no students)'
+    }`
+  );
+
+  // --- Enrollment ----------------------------------------------------------
+  printSectionHeader('ENROLLMENT');
+  const enrollment = getEnrolledCount(students);
+  console.log(`Enrolled           : ${enrollment.enrolled}`);
+  console.log(`Not enrolled       : ${enrollment.notEnrolled}`);
+
+  // --- Top students ----------------------------------------------------------
+  printSectionHeader('TOP 3 STUDENTS BY AVERAGE GRADE');
+  const topStudents = getTopStudents(students, 3);
+  if (topStudents.length === 0) {
+    console.log('No students to rank.');
+  } else {
+    topStudents.forEach((student, index) => {
+      console.log(
+        `${index + 1}. ${student.name} — ${student.course} — avg ${formatGrade(getAverageGrade(student))}`
+      );
+    });
+  }
+
+  // --- Students grouped by course --------------------------------------------
+  printSectionHeader('STUDENTS BY COURSE');
+  const byCourse = groupByCourse(students);
+  Object.keys(byCourse).forEach((course) => {
+    const names = byCourse[course].map((s) => s.name).join(', ');
+    console.log(`${course} (${byCourse[course].length}): ${names}`);
+  });
+
+  // --- Course averages ---------------------------------------------------
+  printSectionHeader('AVERAGE GRADE BY COURSE (HIGH TO LOW)');
+  const courseAverages = getCourseAverages(students);
+  courseAverages.forEach(({ course, average }) => {
+    console.log(`${course.padEnd(20)}: ${formatGrade(average)}`);
+  });
+
+  // --- Sample lookup -------------------------------------------------------
+  printSectionHeader('SAMPLE STUDENT LOOKUP');
+  const lookupNames = ['carla diaz', 'ZZZ Nonexistent'];
+  lookupNames.forEach((name) => {
+    const found = findStudent(students, name);
+    console.log(
+      `Search "${name}" -> ${found ? `${found.name} (${found.course})` : 'No matching student found'}`
+    );
+  });
+
+  // --- Edge case demo: student with no grades -------------------------------
+  printSectionHeader('EDGE CASE CHECKS');
+  const noGradeStudent = students.find((s) => Array.isArray(s.grades) && s.grades.length === 0);
+  if (noGradeStudent) {
+    console.log(
+      `Student with no grades ("${noGradeStudent.name}") average -> ${formatGrade(getAverageGrade(noGradeStudent))}`
+    );
+  } else {
+    console.log('No student with an empty grades array in this dataset.');
+  }
+  console.log(`getTopStudents on empty array -> [${getTopStudents([], 3).join(', ')}] (length ${getTopStudents([], 3).length})`);
+  console.log(`getEnrolledCount on empty array -> ${JSON.stringify(getEnrolledCount([]))}`);
+  console.log(`exportSummary on empty array -> ${JSON.stringify(exportSummary([]))}`);
+
+  // --- Write report.json (stretch goal) -------------------------------------
+  const reportPath = path.join(__dirname, 'report.json');
+  try {
+    fs.writeFileSync(reportPath, JSON.stringify(summary, null, 2), 'utf-8');
+    printSectionHeader('REPORT FILE');
+    console.log(`Summary written to ${reportPath}`);
+  } catch (err) {
+    console.error(`Failed to write report.json: ${err.message}`);
+  }
+
+  console.log('\nDone.');
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    console.error(`Fatal error: ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = {
+  loadStudents,
+  getAverageGrade,
+  getTopStudents,
+  groupByCourse,
+  getEnrolledCount,
+  findStudent,
+  getCourseAverages,
+  exportSummary,
+};
+
+[
+  { "id": 1, "name": "Dave Rezaba", "year": 2, "course": "Computer Science", "grades": [88, 92, 79, 95], "enrolled": true },
+  { "id": 2, "name": "Brian Smith", "year": 3, "course": "Mathematics", "grades": [72, 68, 75], "enrolled": true },
+  { "id": 3, "name": "Carla Diaz", "year": 1, "course": "Computer Science", "grades": [95, 91, 89, 100], "enrolled": true },
+  { "id": 4, "name": "Grace Grace", "year": 4, "course": "Physics", "grades": [60, 65, 58], "enrolled": false },
+  { "id": 5, "name": "Elena Petrova", "year": 2, "course": "Mathematics", "grades": [], "enrolled": true },
+  { "id": 6, "name": "Kenneth Espinosa", "year": 3, "course": "Physics", "grades": [83, 77, 90], "enrolled": true },
+  { "id": 7, "name": "Grace Kim", "year": 1, "course": "Computer Science", "grades": [70, 74, 68], "enrolled": false },
+  { "id": 8, "name": "Hassan Ali", "year": 2, "course": "Biology", "grades": [99, 97, 94, 96], "enrolled": true },
+  { "id": 9, "name": "John Rogen", "year": 4, "course": "Biology", "grades": [55, 60, 62], "enrolled": true },
+  { "id": 10, "name": "Jamal Brown", "year": 3, "course": "Mathematics", "grades": [80, 85, 78, 82], "enrolled": false }
+]
